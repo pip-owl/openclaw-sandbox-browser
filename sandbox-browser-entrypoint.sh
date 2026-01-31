@@ -27,7 +27,7 @@ shutdown() {
 trap shutdown TERM INT
 
 export DISPLAY=:1
-export HOME=/tmp/openclaw-home
+export HOME=/home/openclaw-browser
 export XDG_CONFIG_HOME="${HOME}/.config"
 export XDG_CACHE_HOME="${HOME}/.cache"
 
