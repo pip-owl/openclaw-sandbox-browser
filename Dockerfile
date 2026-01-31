@@ -17,6 +17,7 @@ RUN apt-get update \
     socat \
     websockify \
     wget \
+    x11-utils \
     x11vnc \
     xvfb \
   && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \

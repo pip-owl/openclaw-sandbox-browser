@@ -44,7 +44,20 @@ rm -f "${HOME}/.chrome/SingletonLock"
 rm -f "${HOME}/.chrome/SingletonSocket"
 rm -f "${HOME}/.chrome/SingletonCookie"
 
+# Remove stale X server lock files from previous runs/crashes
+rm -f /tmp/.X1-lock
+rm -rf /tmp/.X11-unix/X1
+
 Xvfb :1 -screen 0 1280x800x24 -ac -nolisten tcp &
+XVFB_PID=$!
+
+# Wait for Xvfb to be ready
+for _ in $(seq 1 50); do
+  if xdpyinfo -display :1 >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
 
 if [[ "${HEADLESS}" == "1" ]]; then
   CHROME_ARGS=(
@@ -76,23 +89,73 @@ CHROME_ARGS+=(
   "--disable-blink-features=AutomationControlled"
 )
 
-google-chrome "${CHROME_ARGS[@]}" about:blank &
-CHROME_PID=$!
+# Function to start Chrome
+start_chrome() {
+  # Clean up any stale Chrome lockfiles
+  rm -f "${HOME}/.chrome/SingletonLock"
+  rm -f "${HOME}/.chrome/SingletonSocket"
+  rm -f "${HOME}/.chrome/SingletonCookie"
+  
+  google-chrome "${CHROME_ARGS[@]}" about:blank &
+  CHROME_PID=$!
+  
+  # Wait for Chrome to be ready
+  for _ in $(seq 1 50); do
+    if curl -sS --max-time 1 "http://127.0.0.1:${CHROME_CDP_PORT}/json/version" >/dev/null 2>&1; then
+      echo "Chrome is ready on port ${CHROME_CDP_PORT}"
+      return 0
+    fi
+    sleep 0.1
+  done
+  
+  echo "Warning: Chrome may not be fully ready"
+  return 0
+}
 
-for _ in $(seq 1 50); do
-  if curl -sS --max-time 1 "http://127.0.0.1:${CHROME_CDP_PORT}/json/version" >/dev/null; then
-    break
-  fi
-  sleep 0.1
-done
+# Start Chrome initially
+start_chrome
 
 socat \
   TCP-LISTEN:"${CDP_PORT}",fork,reuseaddr,bind=0.0.0.0,keepalive,keepidle=10,keepintvl=5,keepcnt=3 \
   TCP:127.0.0.1:"${CHROME_CDP_PORT}",keepalive,keepidle=10,keepintvl=5,keepcnt=3 &
+SOCAT_PID=$!
 
 if [[ "${ENABLE_NOVNC}" == "1" && "${HEADLESS}" != "1" ]]; then
   x11vnc -display :1 -rfbport "${VNC_PORT}" -shared -forever -nopw -localhost &
+  X11VNC_PID=$!
   websockify --web /usr/share/novnc/ "${NOVNC_PORT}" "localhost:${VNC_PORT}" &
+  WEBSOCKIFY_PID=$!
 fi
 
-wait -n
+# Monitor Chrome and restart if it crashes
+while true; do
+  if ! kill -0 "${CHROME_PID}" 2>/dev/null; then
+    echo "Chrome crashed, restarting..."
+    sleep 1
+    
+    # Make sure X server is still running
+    if ! kill -0 "${XVFB_PID}" 2>/dev/null; then
+      echo "Xvfb died, restarting it..."
+      rm -f /tmp/.X1-lock
+      rm -rf /tmp/.X11-unix/X1
+      Xvfb :1 -screen 0 1280x800x24 -ac -nolisten tcp &
+      XVFB_PID=$!
+      sleep 0.5
+    fi
+    
+    start_chrome
+  fi
+  
+  # Also check if Xvfb is healthy
+  if ! kill -0 "${XVFB_PID}" 2>/dev/null; then
+    echo "Xvfb died unexpectedly, restarting everything..."
+    rm -f /tmp/.X1-lock
+    rm -rf /tmp/.X11-unix/X1
+    Xvfb :1 -screen 0 1280x800x24 -ac -nolisten tcp &
+    XVFB_PID=$!
+    sleep 0.5
+    start_chrome
+  fi
+  
+  sleep 2
+done
